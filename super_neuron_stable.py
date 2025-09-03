@@ -5,6 +5,8 @@ import torch.optim as optim
 import math
 import random
 import json
+import pickle
+import os
 from collections import Counter
 import re
 
@@ -61,6 +63,29 @@ class SimpleTokenizer:
             if word not in ["<PAD>", "<START>"]:
                 words.append(word)
         return " ".join(words)
+    
+    def save_tokenizer(self, filepath):
+        """Sauvegarde le tokenizer"""
+        tokenizer_data = {
+            'word_to_idx': self.word_to_idx,
+            'idx_to_word': self.idx_to_word,
+            'vocab_size': self.vocab_size
+        }
+        with open(filepath, 'wb') as f:
+            pickle.dump(tokenizer_data, f)
+        print(f"Tokenizer sauvegardé: {filepath}")
+    
+    @classmethod
+    def load_tokenizer(cls, filepath):
+        """Charge un tokenizer sauvegardé"""
+        tokenizer = cls()
+        with open(filepath, 'rb') as f:
+            data = pickle.load(f)
+        tokenizer.word_to_idx = data['word_to_idx']
+        tokenizer.idx_to_word = data['idx_to_word']
+        tokenizer.vocab_size = data['vocab_size']
+        print(f"Tokenizer chargé: {filepath}")
+        return tokenizer
 
 
 class MultiHeadAttention(nn.Module):
@@ -185,6 +210,40 @@ class SuperNeuronLM(nn.Module):
         logits = self.output_proj(output)
         
         return logits
+    
+    def save_model(self, filepath):
+        """Sauvegarde le modèle complet"""
+        model_data = {
+            'state_dict': self.state_dict(),
+            'config': {
+                'vocab_size': self.vocab_size,
+                'd_model': self.d_model,
+                'num_branches': self.super_neuron.num_branches,
+                'num_heads_per_branch': self.super_neuron.branches[0].num_heads,
+                'max_seq_len': self.positional_encoding.size(0)
+            }
+        }
+        torch.save(model_data, filepath)
+        print(f"Modèle sauvegardé: {filepath}")
+    
+    @classmethod
+    def load_model(cls, filepath, device='cpu'):
+        """Charge un modèle sauvegardé"""
+        model_data = torch.load(filepath, map_location=device)
+        config = model_data['config']
+        
+        model = cls(
+            vocab_size=config['vocab_size'],
+            d_model=config['d_model'],
+            num_branches=config['num_branches'],
+            num_heads_per_branch=config['num_heads_per_branch'],
+            max_seq_len=config['max_seq_len']
+        )
+        
+        model.load_state_dict(model_data['state_dict'])
+        model.eval()
+        print(f"Modèle chargé: {filepath}")
+        return model
 
 
 def load_dataset():
@@ -305,9 +364,9 @@ if __name__ == "__main__":
     print("3. Création du modèle...")
     model = SuperNeuronLM(
         vocab_size=tokenizer.vocab_size,
-        d_model=96,
-        num_branches=4,
-        num_heads_per_branch=6
+        d_model=32,
+        num_branches=8,
+        num_heads_per_branch=4
     )
     
     total_params = sum(p.numel() for p in model.parameters())
@@ -318,13 +377,19 @@ if __name__ == "__main__":
     print(f"Nombre de paires d'entraînement: {len(train_pairs)}")
     
     print("5. Entraînement...")
-    train_model(model, train_pairs, tokenizer, epochs=30)
+    train_model(model, train_pairs, tokenizer, epochs=50)
     
-    print("\n6. Test de génération:")
+    # 6. Sauvegarde du modèle et tokenizer
+    print("6. Sauvegarde...")
+    os.makedirs('saved_models', exist_ok=True)
+    model.save_model('saved_models/super_neuron_model.pth')
+    tokenizer.save_tokenizer('saved_models/tokenizer.pkl')
+    
+    print("7. Test de génération:")
     prompts = ["Les algorithmes", "L'intelligence artificielle", "Les réseaux de neurones", "Le traitement du langage"]
     
     for prompt in prompts:
-        generated = generate_text(model, tokenizer, prompt)
+        generated = generate_text(model, tokenizer, prompt, max_length=24)
         print(f"'{prompt}' -> '{generated}'")
     
     print("\nEntraînement terminé !")
