@@ -26,9 +26,6 @@ Input → Embeddings → Super Neuron → Output
 ```
 .
 ├── super_neuron_stable.py     # Modèle principal stable
-├── super_neuron.py            # Version originale
-├── mini_llm.py               # Implémentation MultiHead simple
-├── multihead_clean.py        # Architecture pure MultiHead
 ├── extended_dataset.json     # Dataset d'entraînement (140 textes)
 ├── dataset.json             # Dataset original
 └── README.md               # Ce fichier
