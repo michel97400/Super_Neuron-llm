@@ -54,7 +54,9 @@ class SpecializedPreprocessor(nn.Module):
         
         if specialty_type == "syntax":
             # Focus sur les relations grammaticales locales
-            self.processor = nn.MultiheadAttention(embed_dim, 4, batch_first=True)
+            # Adapter le nombre de têtes selon embed_dim
+            syntax_heads = max(1, embed_dim // 64)  # Au moins 1 tête, 1 par 64 dims
+            self.processor = nn.MultiheadAttention(embed_dim, syntax_heads, batch_first=True)
             self.norm = nn.LayerNorm(embed_dim)
             
         elif specialty_type == "semantic":
@@ -75,6 +77,25 @@ class SpecializedPreprocessor(nn.Module):
         elif specialty_type == "pattern":
             # Focus sur les patterns et structures
             self.processor = nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1)
+            self.norm = nn.LayerNorm(embed_dim)
+            
+        elif specialty_type == "logical":
+            # Focus sur les relations logiques et causales
+            logical_heads = max(1, embed_dim // 64)  # Adapter les têtes
+            self.processor = nn.TransformerEncoderLayer(
+                d_model=embed_dim, nhead=logical_heads, dim_feedforward=embed_dim*2,
+                dropout=0.1, batch_first=True
+            )
+            self.norm = nn.LayerNorm(embed_dim)
+            
+        elif specialty_type == "temporal":
+            # Focus sur les dépendances temporelles
+            self.processor = nn.GRU(embed_dim, embed_dim, num_layers=2, batch_first=True, dropout=0.1)
+            self.norm = nn.LayerNorm(embed_dim)
+            
+        else:
+            # Spécialisation par défaut
+            self.processor = nn.Linear(embed_dim, embed_dim)
             self.norm = nn.LayerNorm(embed_dim)
             
     def forward(self, x):
@@ -98,6 +119,21 @@ class SpecializedPreprocessor(nn.Module):
             # x: [batch, seq, embed] -> [batch, embed, seq] pour conv1d
             x_conv = x.transpose(1, 2)
             processed = self.processor(x_conv).transpose(1, 2)
+            return self.norm(x + processed)
+            
+        elif self.specialty_type == "logical":
+            # Transformer encoder pour relations logiques
+            processed = self.processor(x)
+            return self.norm(x + processed)
+            
+        elif self.specialty_type == "temporal":
+            # GRU pour dépendances temporelles
+            processed, _ = self.processor(x)
+            return self.norm(x + processed)
+            
+        else:
+            # Transformation par défaut
+            processed = self.processor(x)
             return self.norm(x + processed)
 
 class SuperNeuronBranch(nn.Module):
@@ -139,28 +175,30 @@ class SuperNeuronBranch(nn.Module):
 
 class SuperNeuronV2(nn.Module):
     """Super Neuron V2 avec pré-processeurs spécialisés"""
-    def __init__(self, vocab_size, embed_dim=32, num_heads=4, max_seq_len=32):
+    def __init__(self, vocab_size, embed_dim=256, num_heads=6, max_seq_len=512, num_branches=4):
         super().__init__()
         self.embed_dim = embed_dim
         self.max_seq_len = max_seq_len
+        self.num_branches = num_branches
         
         # Embeddings
         self.token_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(max_seq_len, embed_dim)
         
-        # 4 branches spécialisées
+        # Types de spécialisations disponibles
+        specialty_types = ["syntax", "semantic", "context", "pattern", "logical", "temporal"]
+        
+        # Branches spécialisées (nombre paramétrable)
         self.branches = nn.ModuleList([
-            SuperNeuronBranch(embed_dim, num_heads, "syntax"),    # Syntaxe
-            SuperNeuronBranch(embed_dim, num_heads, "semantic"),  # Sémantique
-            SuperNeuronBranch(embed_dim, num_heads, "context"),   # Contexte
-            SuperNeuronBranch(embed_dim, num_heads, "pattern")    # Patterns
+            SuperNeuronBranch(embed_dim, num_heads, specialty_types[i % len(specialty_types)])
+            for i in range(num_branches)
         ])
         
-        # Mécanisme de routage intelligent
+        # Mécanisme de routage intelligent adaptatif
         self.router = nn.Sequential(
             nn.Linear(embed_dim, 64),
             nn.ReLU(),
-            nn.Linear(64, 4),  # 4 branches
+            nn.Linear(64, num_branches),  # Adapté au nombre de branches
             nn.Softmax(dim=-1)
         )
         
@@ -259,11 +297,12 @@ class SuperNeuronLMV2:
                 words.append(self.reverse_vocab[token])
         return ' '.join(words)
     
-    def create_model(self):
-        """Création du modèle"""
-        self.model = SuperNeuronV2(self.vocab_size)
+    def create_model(self, num_branches=4, embed_dim=256, num_heads=6):
+        """Création du modèle avec nombre de branches paramétrable"""
+        self.model = SuperNeuronV2(self.vocab_size, embed_dim, num_heads, num_branches=num_branches)
         total_params = sum(p.numel() for p in self.model.parameters())
         print(f"Paramètres totaux: {total_params:,}")
+        print(f"Branches: {num_branches} avec spécialisations variables")
         return self.model
     
     def prepare_training_data(self, texts, seq_length=32):
@@ -328,7 +367,7 @@ class SuperNeuronLMV2:
         
         return model_file, tokenizer_file
     
-    def load_model(self, model_path="saved_models_v2", model_name="super_neuron_v2"):
+    def load_model(self, model_path="saved_models_v2", model_name="super_neuron_v2", num_branches=4):
         """Chargement du modèle et tokenizer"""
         # Chargement du tokenizer
         tokenizer_file = os.path.join(model_path, f"{model_name}_tokenizer.pkl")
@@ -339,13 +378,14 @@ class SuperNeuronLMV2:
         self.vocab_size = tokenizer_data['vocab_size']
         self.reverse_vocab = tokenizer_data['reverse_vocab']
         
-        # Création et chargement du modèle
-        self.model = SuperNeuronV2(self.vocab_size)
+        # Création et chargement du modèle avec branches paramétrables
+        self.model = SuperNeuronV2(self.vocab_size, num_branches=num_branches)
         model_file = os.path.join(model_path, f"{model_name}_model.pth")
         self.model.load_state_dict(torch.load(model_file, map_location='cpu'))
         
         print(f"Modèle chargé: {model_file}")
         print(f"Tokenizer chargé: {tokenizer_file}")
+        print(f"Configuration: {num_branches} branches")
         return self.model
 
 def main():
@@ -364,8 +404,8 @@ def main():
     llm.build_vocab(texts)
     
     print("3. Création du modèle...")
-    model = llm.create_model()
-    
+    model = llm.create_model(num_branches=6, embed_dim=128, num_heads=8)  # 128÷8=16 ✅
+
     # 4. Préparation des données
     print("4. Préparation des données...")
     training_pairs = llm.prepare_training_data(texts, seq_length=16)
@@ -381,8 +421,8 @@ def main():
     
     start_time = time.time()
     model.train()
-    
-    for epoch in range(5):  # Réduit pour test rapide
+
+    for epoch in range(5):  # Test rapide avec 3 epochs
         epoch_start = time.time()
         total_loss = 0
         batch_count = 0
